@@ -1,0 +1,49 @@
+version: '3.8'
+services:
+  
+  myapp:
+    image: seungheyon/myfirsthub:latest
+    container_name: myapp
+    ports:
+      - 8080:8080
+    environment:
+      - AUTH_JWT_ISSUER=${{secrets.AUTH_JWT_ISSUER}} 
+      - AUTH_JWT_ACCESSTOKENSECRET=${{secrets.AUTH_JWT_ACCESSTOKENSECRET}} 
+      - AUTH_JWT_ACCESSTOKENEXPIRATIONHOUR=${{secrets.AUTH_JWT_ACCESSTOKENEXPIRATIONHOUR}} 
+      - OAUTH2_NAVER_CLIENT_ID=${{secrets.OAUTH2_NAVER_CLIENT_ID}} 
+      - OAUTH2_NAVER_CLIENT_SECRET=${{secrets.OAUTH2_NAVER_CLIENT_SECRET}} 
+      - OAUTH2_NAVER_REDIRECT_URL=${{secrets.OAUTH2_NAVER_REDIRECT_URL}} 
+      - OAUTH2_NAVER_AUTH_SERVER_BASE_URL=${{secrets.OAUTH2_NAVER_AUTH_SERVER_BASE_URL}} 
+      - OAUTH2_NAVER_RESOURCE_SERVER_BASE_URL=${{secrets.OAUTH2_NAVER_RESOURCE_SERVER_BASE_URL}} 
+      - OAUTH2_GOOGLE_CLIENT_ID=${{secrets.OAUTH2_GOOGLE_CLIENT_ID}} 
+      - OAUTH2_GOOGLE_CLIENT_SECRET=${{secrets.OAUTH2_GOOGLE_CLIENT_SECRET}} 
+      - OAUTH2_GOOGLE_REDIRECT_URL=${{secrets.OAUTH2_GOOGLE_REDIRECT_URL}} 
+      - OAUTH2_GOOGLE_AUTH_SERVER_BASE_URL=${{secrets.OAUTH2_GOOGLE_AUTH_SERVER_BASE_URL}} 
+      - OAUTH2_GOOGLE_RESOURCE_SERVER_BASE_URL=${{secrets.OAUTH2_GOOGLE_RESOURCE_BASE_URL}} 
+      - OAUTH2_GOOGLE_TOKEN_SERVER_BASE_URL=${{secrets.OAUTH2_GOOGLE_TOKEN_SERVER_BASE_URL}} 
+      - CLOUD_AWS_S3_BUCKET=${{secrets.CLOUD_AWS_S3_BUCKET}} 
+      - CLOUD_AWS_CREDENTIALS_ACCESSKEY=${{secrets.CLOUD_AWS_CREDENTIALS_ACCESSKEY}} 
+      - CLOUD_AWS_CREDENTIALS_SECRETKEY=${{secrets.CLOUD_AWS_CREDENTIALS_SECRETKEY}} 
+      - CLOUD_AWS_REGION_STATIC=${{secrets.CLOUD_AWS_REGION_STATIC}} 
+      - COOLSMS_API_KEY=${{secrets.COOLSMS_API_KEY}} 
+      - COOLSMS_API_SECRET=${{secrets.COOLSMS_API_SECRET}} 
+      - COOLSMS_API_DOMAIN=${{secrets.COOLSMS_API_DOMAIN}} 
+      - COOLSMS_FROMNUMBER=${{secrets.COOLSMS_FROMNUMBER}} 
+      - DATA_REDIS_HOST=${{secrets.DATA_REDIS_HOST}} 
+      - DATA_REDIS_PORT=${{secrets.DATA_REDIS_PORT}} 
+    depends_on:
+      # - mysql
+      - redis
+  redis:
+    image: redis:latest
+    ports:
+      - 6379:6379
+  # mysql:
+  #   image: mysql:latest
+  #   ports:
+  #     - 3306:3306
+  #   environment:
+  #     - MYSQL_ROOT_PASSWORD=password
+  #     - MYSQL_DATABASE=test
+  #     - MYSQL_USER=root
+  #     - MYSQL_PASSWORD=password

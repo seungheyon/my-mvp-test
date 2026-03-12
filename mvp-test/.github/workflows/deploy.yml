@@ -1,0 +1,137 @@
+name: Build Test
+
+on:
+  push:
+    branches: 
+      - "dev" 
+  # pull_request:
+  #   branches: 
+  #     - "master" 
+      
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:latest
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout code            # 내 코드 체크아웃
+      uses: actions/checkout@v4      # 체크아웃 actions 사용
+
+    - name: Set up JDK
+      uses: actions/setup-java@v3    # JDK setup actoins 사용
+      with:
+        java-version: '17'    # 자신의 프로젝트에 맞는 Java 버전으로 변경
+        distribution: 'zulu'
+    - name: Run chmod to make gradlew executable
+      run: chmod +x ./gradlew  # gradlew 명령어 실행 권한 부여
+    - name: Build with Gradle
+      env:
+     
+        AUTH_JWT_ISSUER: ${{secrets.AUTH_JWT_ISSUER}}
+        AUTH_JWT_ACCESSTOKENSECRET: ${{secrets.AUTH_JWT_ACCESSTOKENSECRET}}
+        AUTH_JWT_ACCESSTOKENEXPIRATIONHOUR: ${{secrets.AUTH_JWT_ACCESSTOKENEXPIRATIONHOUR}}
+
+        OAUTH2_NAVER_CLIENT_ID: ${{secrets.OAUTH2_NAVER_CLIENT_ID}}
+        OAUTH2_NAVER_CLIENT_SECRET: ${{secrets.OAUTH2_NAVER_CLIENT_SECRET}}
+        OAUTH2_NAVER_REDIRECT_URL: ${{secrets.OAUTH2_NAVER_REDIRECT_URL}}
+        OAUTH2_NAVER_AUTH_SERVER_BASE_URL: ${{secrets.OAUTH2_NAVER_AUTH_SERVER_BASE_URL}}
+        OAUTH2_NAVER_RESOURCE_SERVER_BASE_URL: ${{secrets.OAUTH2_NAVER_RESOURCE_SERVER_BASE_URL}}
+        
+        OAUTH2_GOOGLE_CLIENT_ID: ${{secrets.OAUTH2_GOOGLE_CLIENT_ID}}
+        OAUTH2_GOOGLE_CLIENT_SECRET: ${{secrets.OAUTH2_GOOGLE_CLIENT_SECRET}}
+        OAUTH2_GOOGLE_REDIRECT_URL: ${{secrets.OAUTH2_GOOGLE_REDIRECT_URL}}
+        OAUTH2_GOOGLE_AUTH_SERVER_BASE_URL: ${{secrets.OAUTH2_GOOGLE_AUTH_SERVER_BASE_URL}}
+        OAUTH2_GOOGLE_RESOURCE_SERVER_BASE_URL: ${{secrets.OAUTH2_GOOGLE_RESOURCE_SERVER_BASE_URL}}
+        OAUTH2_GOOGLE_TOKEN_SERVER_BASE_URL: ${{secrets.OAUTH2_GOOGLE_TOKEN_SERVER_BASE_URL}}
+
+        CLOUD_AWS_S3_BASEURL: ${{secrets.CLOUD_AWS_S3_BASEURL}}
+        CLOUD_AWS_S3_BUCKET: ${{secrets.CLOUD_AWS_S3_BUCKET}}
+        CLOUD_AWS_CREDENTIALS_ACCESSKEY: ${{secrets.CLOUD_AWS_CREDENTIALS_ACCESSKEY}}
+        CLOUD_AWS_CREDENTIALS_SECRETKEY: ${{secrets.CLOUD_AWS_CREDENTIALS_SECRETKEY}}
+        CLOUD_AWS_REGION_STATIC: ${{secrets.CLOUD_AWS_REGION_STATIC}}
+        
+        COOLSMS_API_KEY: ${{secrets.COOLSMS_API_KEY}}
+        COOLSMS_API_SECRET: ${{secrets.COOLSMS_API_SECRET}}
+        COOLSMS_API_DOMAIN: ${{secrets.COOLSMS_API_DOMAIN}}
+        COOLSMS_FROMNUMBER: ${{secrets.COOLSMS_FROMNUMBER}}
+
+        DATA_REDIS_HOST: ${{secrets.DATA_REDIS_HOST}}
+        DATA_REDIS_PORT: ${{secrets.DATA_REDIS_PORT}}
+
+      uses: gradle/gradle-build-action@749f47bda3e44aa060e82d7b3ef7e40d953bd629 # v2.6.0
+      with:
+        arguments: build bootJar
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_ACCESSTOKEN }}
+
+    - name: Build and Push Docker image
+      run: |
+        docker build -t seungheyon/myfirsthub .
+        docker push seungheyon/myfirsthub
+
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Deploy to EC2
+      uses: appleboy/ssh-action@v0.1.6
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ubuntu
+        key: ${{ secrets.SSH_KEY }}
+        script: |
+
+          
+          BLUE_PORT=8081
+          GREEN_PORT=8082
+            
+          CURRENT_PORT=$(sudo grep -Po 'proxy_pass http://myapp\K[12]' /etc/nginx/sites-enabled/myapp | head -1)
+
+          if [ "$CURRENT_PORT" == "1" ]; then
+            TARGET_PORT=$GREEN_PORT
+            TARGET_CONTAINER=myapp2
+          else
+            TARGET_PORT=$BLUE_PORT
+            TARGET_CONTAINER=myapp1
+          fi
+
+          if lsof -Pi :$TARGET_PORT -sTCP:LISTEN -t >/dev/null ; then
+              echo "Port $TARGET_PORT is already in use, stopping the process."
+              docker-compose -f /home/ubuntu/docker-compose.yaml stop $TARGET_CONTAINER
+              sudo fuser -k $TARGET_PORT/tcp
+          fi
+
+          echo "Deploying to port $TARGET_PORT..."
+          docker-compose -f /home/ubuntu/docker-compose.yaml up -d $TARGET_CONTAINER
+
+          echo "Waiting for the application on port $TARGET_PORT to be ready..."
+          until $(curl --output /dev/null --silent --head --fail http://localhost:$TARGET_PORT/health); do
+              printf '.'
+              sleep 5 
+          done
+
+          echo "Application on port $TARGET_PORT is ready."
+
+          sudo sed -i "s/proxy_pass http:\/\/myapp[12]/proxy_pass http:\/\/myapp${TARGET_PORT: -1}/" /etc/nginx/sites-enabled/myapp
+
+          sudo nginx -t
+
+          sudo systemctl reload nginx
+
+          echo "Deployment to port $TARGET_PORT completed." 
