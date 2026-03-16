@@ -1,5 +1,6 @@
 package com.team1.mvp_test.domain.report.service
 
+import com.team1.mvp_test.common.error.MvpTestErrorMessage
 import com.team1.mvp_test.common.error.ReportErrorMessage
 import com.team1.mvp_test.common.exception.ModelNotFoundException
 import com.team1.mvp_test.common.exception.NoPermissionException
@@ -131,6 +132,17 @@ class ReportService(
         if (report.step.mvpTest.enterpriseId != enterpriseId) throw NoPermissionException(ReportErrorMessage.NO_PERMISSION.message)
         report.reject(reason)
         return ReportResponse.from(report)
+    }
+
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    fun getReportListByStep(enterpriseId: Long, testId: Long, stepId: Long): List<ReportResponse> {
+        val step = stepRepository.findByIdOrNull(stepId)
+            ?: throw ModelNotFoundException("Step", stepId)
+        if (step.mvpTest.id != testId)
+            throw NoPermissionException(MvpTestErrorMessage.NOT_AUTHORIZED.message)
+        if (step.mvpTest.enterpriseId != enterpriseId)
+            throw NoPermissionException(MvpTestErrorMessage.NOT_AUTHORIZED.message)
+        return reportRepository.findAllByStepId(stepId).map { ReportResponse.from(it) }
     }
 
     private fun checkDateCondition(test: MvpTest) {

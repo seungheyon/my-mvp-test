@@ -90,6 +90,18 @@ class ReportController(
     }
 
     @PreAuthorize("hasRole('ENTERPRISE')")
+    @GetMapping("/mvp-tests/{testId}/steps/{stepId}/reports")
+    fun getReportListByStep(
+        @PathVariable testId: Long,
+        @PathVariable stepId: Long,
+        @AuthenticationPrincipal userPrincipal: UserPrincipal,
+    ): ResponseEntity<List<ReportResponse>> {
+        return ResponseEntity
+            .status(HttpStatus.OK)
+            .body(reportService.getReportListByStep(userPrincipal.id, testId, stepId))
+    }
+
+    @PreAuthorize("hasRole('ENTERPRISE')")
     @GetMapping("/step/{step-id}/reports/{member-id}")
     fun getReportByEnterprise(
         @PathVariable("step-id") stepId: Long,
