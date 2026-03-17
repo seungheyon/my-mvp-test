@@ -3,6 +3,7 @@ package com.team1.mvp_test.infra.security
 import com.team1.mvp_test.infra.security.jwt.JwtAuthenticationFilter
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.http.HttpMethod
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
 import org.springframework.security.config.annotation.web.builders.HttpSecurity
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
@@ -34,6 +35,8 @@ class SecurityConfig(
                     "/admin/**",
                     "/health"
                 )
+                    .permitAll()
+                    .requestMatchers(HttpMethod.GET, "/api/v1/mvp-tests", "/api/v1/mvp-tests/{testId}")
                     .permitAll()
                     .anyRequest().authenticated()
             }

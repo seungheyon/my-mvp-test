@@ -1,5 +1,6 @@
 package com.team1.mvp_test.domain.report.controller
 
+import com.team1.mvp_test.common.dto.CursorPageResponse
 import com.team1.mvp_test.domain.report.dto.ReportRequest
 import com.team1.mvp_test.domain.report.dto.ReportResponse
 import com.team1.mvp_test.domain.report.service.ReportService
@@ -87,6 +88,20 @@ class ReportController(
         return ResponseEntity
             .status(HttpStatus.OK)
             .body(reportService.getReport(userPrincipal.id, stepId))
+    }
+
+    @PreAuthorize("hasRole('ENTERPRISE')")
+    @GetMapping("/mvp-tests/{testId}/steps/{stepId}/reports")
+    fun getReportListByStep(
+        @PathVariable testId: Long,
+        @PathVariable stepId: Long,
+        @RequestParam(required = false) cursor: Long?,
+        @RequestParam(defaultValue = "10") size: Int,
+        @AuthenticationPrincipal userPrincipal: UserPrincipal,
+    ): ResponseEntity<CursorPageResponse<ReportResponse>> {
+        return ResponseEntity
+            .status(HttpStatus.OK)
+            .body(reportService.getReportListByStep(userPrincipal.id, testId, stepId, cursor, size))
     }
 
     @PreAuthorize("hasRole('ENTERPRISE')")

@@ -2,6 +2,7 @@ package com.team1.mvp_test.domain.mvptest.repository
 
 import com.querydsl.core.BooleanBuilder
 import com.querydsl.core.types.Projections
+import com.querydsl.core.types.dsl.DateTimePath
 import com.querydsl.jpa.impl.JPAQueryFactory
 import com.team1.mvp_test.domain.member.model.Member
 import com.team1.mvp_test.domain.member.model.MemberTestState
@@ -9,6 +10,7 @@ import com.team1.mvp_test.domain.member.model.QMember
 import com.team1.mvp_test.domain.member.model.QMemberTest
 import com.team1.mvp_test.domain.mvptest.dto.MemberInfoResponse
 import com.team1.mvp_test.domain.mvptest.model.MvpTest
+import com.team1.mvp_test.domain.mvptest.model.MvpTestSortType
 import com.team1.mvp_test.domain.mvptest.model.MvpTestState
 import com.team1.mvp_test.domain.mvptest.model.QMvpTest
 import org.springframework.data.domain.Pageable
@@ -28,6 +30,7 @@ interface MvpTestQueryDslRepository {
     fun findMemberList(testId: Long, enterpriseId: Long): List<MemberInfoResponse>
     fun findAvailableTests(member: Member, pageable: Pageable): List<MvpTest>
     fun findMvpTestListByCursor(cursor: Long?, size: Int): List<MvpTest>
+    fun findMvpTestListByDateCursor(sortBy: MvpTestSortType, cursorDate: LocalDateTime?, cursorId: Long?, size: Int): List<MvpTest>
 }
 
 class MvpTestQueryDslRepositoryImpl(
@@ -91,6 +94,30 @@ class MvpTestQueryDslRepositoryImpl(
         return queryFactory.selectFrom(mvpTest)
             .where(builder)
             .orderBy(mvpTest.id.desc())
+            .limit((size + 1).toLong())
+            .fetch()
+    }
+
+    override fun findMvpTestListByDateCursor(
+        sortBy: MvpTestSortType,
+        cursorDate: LocalDateTime?,
+        cursorId: Long?,
+        size: Int
+    ): List<MvpTest> {
+        val sortColumn: DateTimePath<LocalDateTime> = when (sortBy) {
+            MvpTestSortType.TEST_START_DATE -> mvpTest.testStartDate
+            MvpTestSortType.TEST_END_DATE -> mvpTest.testEndDate
+        }
+        val builder = BooleanBuilder()
+        if (cursorDate != null && cursorId != null) {
+            builder.and(
+                sortColumn.lt(cursorDate)
+                    .or(sortColumn.eq(cursorDate).and(mvpTest.id.lt(cursorId)))
+            )
+        }
+        return queryFactory.selectFrom(mvpTest)
+            .where(builder)
+            .orderBy(sortColumn.desc(), mvpTest.id.desc())
             .limit((size + 1).toLong())
             .fetch()
     }

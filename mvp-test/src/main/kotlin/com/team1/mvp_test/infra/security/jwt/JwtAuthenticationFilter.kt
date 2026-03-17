@@ -41,7 +41,14 @@ class JwtAuthenticationFilter(
                         SecurityContextHolder.getContext().authentication = authentication
                     }
                 }
-
+                .onFailure { e ->
+                    val reason = when (e) {
+                        is io.jsonwebtoken.ExpiredJwtException -> "Token has expired"
+                        is io.jsonwebtoken.security.SignatureException -> "Invalid token signature"
+                        else -> "Invalid token"
+                    }
+                    request.setAttribute("jwt-error", reason)
+                }
         }
 
         filterChain.doFilter(request, response)

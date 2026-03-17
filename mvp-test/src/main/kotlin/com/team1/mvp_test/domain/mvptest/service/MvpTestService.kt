@@ -2,6 +2,7 @@ package com.team1.mvp_test.domain.mvptest.service
 
 import com.team1.mvp_test.admin.dto.adminauthority.MvpTestListResponse
 import com.team1.mvp_test.common.dto.CursorPageResponse
+import com.team1.mvp_test.common.dto.DateCursorPageResponse
 import com.team1.mvp_test.common.error.CategoryErrorMessage
 import com.team1.mvp_test.common.error.MemberErrorMessage
 import com.team1.mvp_test.common.error.MvpTestErrorMessage
@@ -23,11 +24,14 @@ import com.team1.mvp_test.domain.mvptest.dto.MvpTestResponse
 import com.team1.mvp_test.domain.mvptest.dto.UpdateMvpTestRequest
 import com.team1.mvp_test.domain.mvptest.model.MvpTest
 import com.team1.mvp_test.domain.mvptest.model.MvpTestCategoryMap
+import com.team1.mvp_test.domain.mvptest.model.MvpTestSortType
 import com.team1.mvp_test.domain.mvptest.model.RecruitType
 import com.team1.mvp_test.domain.mvptest.repository.MvpTestCategoryMapRepository
 import com.team1.mvp_test.domain.mvptest.repository.MvpTestRepository
 import com.team1.mvp_test.infra.redisson.RedissonService
 import com.team1.mvp_test.infra.s3.s3service.S3Service
+import org.springframework.cache.annotation.CacheEvict
+import org.springframework.cache.annotation.Cacheable
 import org.springframework.data.domain.Pageable
 import org.springframework.data.repository.findByIdOrNull
 import org.springframework.stereotype.Service
@@ -125,6 +129,7 @@ class MvpTestService(
     }
 
     @Transactional
+    @CacheEvict(value = ["mvpTest"], key = "#testId", cacheManager = "redisCacheManager")
     fun deleteMvpTest(enterpriseId: Long, testId: Long) {
         val mvpTest = mvpTestRepository.findByIdOrNull(testId)
             ?: throw ModelNotFoundException("MvpTest", testId)
@@ -133,6 +138,7 @@ class MvpTestService(
         mvpTestRepository.delete(mvpTest)
     }
 
+    @Cacheable(value = ["mvpTest"], key = "#testId", cacheManager = "redisCacheManager")
     fun getMvpTest(testId: Long): MvpTestResponse {
         val mvpTest = mvpTestRepository.findByIdOrNull(testId)
             ?: throw ModelNotFoundException("MvpTest", testId)
@@ -143,6 +149,26 @@ class MvpTestService(
         val categories = mvpTestCategoryMapRepository.findAllByMvpTestId(testId)
             .map { it.category.name }
         return MvpTestResponse.from(mvpTest, enterprise, categories)
+    }
+
+    fun getMvpTestListSorted(
+        sortBy: MvpTestSortType,
+        cursorDate: LocalDateTime?,
+        cursorId: Long?,
+        size: Int
+    ): DateCursorPageResponse<MvpTestResponse> {
+        val items = mvpTestRepository.findMvpTestListByDateCursor(sortBy, cursorDate, cursorId, size)
+            .map { mvpTest ->
+                val enterprise = enterpriseRepository.findByIdOrNull(mvpTest.enterpriseId)!!
+                val categories = mvpTestCategoryMapRepository.findAllByMvpTestId(mvpTest.id!!)
+                    .map { it.category.name }
+                MvpTestResponse.from(mvpTest, enterprise, categories)
+            }
+        val dateExtractor: (MvpTestResponse) -> LocalDateTime = when (sortBy) {
+            MvpTestSortType.TEST_START_DATE -> { it -> it.testStartDate }
+            MvpTestSortType.TEST_END_DATE -> { it -> it.testEndDate }
+        }
+        return DateCursorPageResponse.of(items, size, dateExtractor) { it.id }
     }
 
     fun getMvpTestList(cursor: Long?, size: Int): CursorPageResponse<MvpTestResponse> {

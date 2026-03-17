@@ -3,6 +3,7 @@ package com.team1.mvp_test.domain.report.model
 import com.team1.mvp_test.domain.member.model.MemberTest
 import com.team1.mvp_test.domain.step.model.Step
 import jakarta.persistence.*
+import org.hibernate.annotations.BatchSize
 
 @Entity
 @Table(name = "report")
@@ -37,6 +38,7 @@ class Report(
 
     @OneToMany
     @JoinColumn(name = "report_id")
+    @BatchSize(size=100)
     var reportMedia: MutableList<ReportMedia> = mutableListOf(),
 
     ) {

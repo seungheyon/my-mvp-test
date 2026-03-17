@@ -1,14 +1,18 @@
 package com.team1.mvp_test.domain.mvptest.controller
 
 import com.team1.mvp_test.common.dto.CursorPageResponse
+import com.team1.mvp_test.common.dto.DateCursorPageResponse
 import com.team1.mvp_test.domain.mvptest.dto.CreateMvpTestRequest
+import com.team1.mvp_test.domain.mvptest.model.MvpTestSortType
 import com.team1.mvp_test.domain.mvptest.dto.MemberInfoResponse
 import com.team1.mvp_test.domain.mvptest.dto.MvpTestResponse
 import com.team1.mvp_test.domain.mvptest.dto.UpdateMvpTestRequest
 import com.team1.mvp_test.domain.mvptest.service.MvpTestService
 import com.team1.mvp_test.infra.security.UserPrincipal
 import jakarta.validation.Valid
+import org.springframework.format.annotation.DateTimeFormat
 import org.springframework.data.domain.Pageable
+import java.time.LocalDateTime
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.security.access.prepost.PreAuthorize
@@ -65,6 +69,18 @@ class MvpTestController(
         return ResponseEntity
             .status(HttpStatus.OK)
             .body(mvpTestService.getMvpTest(testId))
+    }
+
+    @GetMapping("/sorted")
+    fun getMvpTestListSorted(
+        @RequestParam sortBy: MvpTestSortType,
+        @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) cursorDate: LocalDateTime?,
+        @RequestParam(required = false) cursorId: Long?,
+        @RequestParam(defaultValue = "10") size: Int
+    ): ResponseEntity<DateCursorPageResponse<MvpTestResponse>> {
+        return ResponseEntity
+            .status(HttpStatus.OK)
+            .body(mvpTestService.getMvpTestListSorted(sortBy, cursorDate, cursorId, size))
     }
 
     @GetMapping
