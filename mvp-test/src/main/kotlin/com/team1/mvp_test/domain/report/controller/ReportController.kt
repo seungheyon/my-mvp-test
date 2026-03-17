@@ -1,5 +1,6 @@
 package com.team1.mvp_test.domain.report.controller
 
+import com.team1.mvp_test.common.dto.CursorPageResponse
 import com.team1.mvp_test.domain.report.dto.ReportRequest
 import com.team1.mvp_test.domain.report.dto.ReportResponse
 import com.team1.mvp_test.domain.report.service.ReportService
@@ -94,11 +95,13 @@ class ReportController(
     fun getReportListByStep(
         @PathVariable testId: Long,
         @PathVariable stepId: Long,
+        @RequestParam(required = false) cursor: Long?,
+        @RequestParam(defaultValue = "10") size: Int,
         @AuthenticationPrincipal userPrincipal: UserPrincipal,
-    ): ResponseEntity<List<ReportResponse>> {
+    ): ResponseEntity<CursorPageResponse<ReportResponse>> {
         return ResponseEntity
             .status(HttpStatus.OK)
-            .body(reportService.getReportListByStep(userPrincipal.id, testId, stepId))
+            .body(reportService.getReportListByStep(userPrincipal.id, testId, stepId, cursor, size))
     }
 
     @PreAuthorize("hasRole('ENTERPRISE')")
