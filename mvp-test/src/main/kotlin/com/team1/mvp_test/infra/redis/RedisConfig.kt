@@ -67,7 +67,7 @@ class RedisConfig(
             disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
             activateDefaultTyping(
                 LaissezFaireSubTypeValidator.instance,
-                ObjectMapper.DefaultTyping.NON_FINAL
+                ObjectMapper.DefaultTyping.EVERYTHING
             )
         }
         val jsonSerializer = GenericJackson2JsonRedisSerializer(objectMapper)
