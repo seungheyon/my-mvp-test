@@ -840,7 +840,7 @@ val objectMapper = ObjectMapper().apply {   // Spring 빈과 무관한 새 인�
     disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
     activateDefaultTyping(
         LaissezFaireSubTypeValidator.instance,
-        ObjectMapper.DefaultTyping.NON_FINAL
+        ObjectMapper.DefaultTyping.EVERYTHING  // NON_FINAL은 Kotlin에서 동작하지 않음 — 아래 참고
     )
 }
 ```
@@ -866,6 +866,43 @@ data class MvpTestResponse(val id: Long, val mvpName: String, ...)
 `KotlinModule`은 Jackson에게 "Kotlin 클래스는 primary 생성자를 통해 만들어라"고 알려준다. 이게 없으면 `InvalidDefinitionException: No creators, like default constructor, exist` 예외가 발생한다.
 
 Spring Boot의 자동 구성 `ObjectMapper`에는 `KotlinModule`이 자동 등록되어 있지만, Redis 전용으로 `ObjectMapper()`를 직접 생성하면 자동 구성과 무관한 순수 Jackson 기본 상태다. 따라서 `registerKotlinModule()`을 수동으로 등록해야 한다.
+
+---
+
+### DefaultTyping.EVERYTHING — Kotlin final-by-default 문제
+
+#### KotlinModule이 해결하는 문제와 혼동하기 쉬운 이유
+
+`KotlinModule`과 `DefaultTyping`은 역직렬화 파이프라인의 **서로 다른 단계**를 담당한다.
+
+| | 해결하는 문제 | 개입 시점 |
+|---|---|---|
+| `KotlinModule` | no-arg 생성자 없는 Kotlin 클래스를 primary 생성자로 인스턴스화 | 타입을 알고 난 뒤, 객체를 **만드는** 단계 |
+| `DefaultTyping` | JSON에 `@class` 타입 정보를 포함시켜 역직렬화 시 타입 복원 | 어떤 타입으로 역직렬화할지 **결정하는** 단계 |
+
+`KotlinModule`은 "어떤 생성자를 쓸지"를 해결하고, `DefaultTyping`은 "어떤 타입인지"를 해결한다. 두 문제는 독립적이다.
+
+#### NON_FINAL이 Kotlin에서 동작하지 않는 이유
+
+`DefaultTyping.NON_FINAL`은 **final이 아닌 타입에만** `@class` 타입 정보를 포함시킨다. Java에서는 대부분의 클래스가 non-final이라 일반적으로 잘 동작한다.
+
+그런데 Kotlin에서는 `open`을 명시하지 않는 한 **모든 클래스가 기본적으로 final**이다. `MvpTestResponse`도 마찬가지다.
+
+```
+저장 시: MvpTestResponse (final) → NON_FINAL이므로 @class 미포함 → {"id":1,...}
+읽기 시: Object 타입으로 역직렬화 시도 → Object는 non-final → @class 기대 → 불일치 → SerializationException
+```
+
+#### 해결: DefaultTyping.EVERYTHING
+
+`EVERYTHING`은 final 클래스 포함 모든 타입에 `@class`를 포함시킨다.
+
+```
+저장 시: MvpTestResponse (final) → EVERYTHING이므로 @class 포함 → ["com.team1...MvpTestResponse",{"id":1,...}]
+읽기 시: @class로 타입 복원 → KotlinModule이 primary 생성자로 인스턴스화 → 성공
+```
+
+`EVERYTHING`은 Jackson에서 deprecated 표시가 있지만, Redis 내부 캐시 포맷에 한정해 사용하는 경우라 보안 문제와 무관하다. deprecated 이유는 신뢰할 수 없는 JSON 입력을 역직렬화할 때의 보안 위험(역직렬화 공격) 때문인데, Redis 캐시는 앱 자신이 직렬화한 값만 읽으므로 해당하지 않는다.
 
 ---
 
@@ -1040,3 +1077,185 @@ fun updateMvpTest(...) { ... }
 | 업데이트 + 트래픽 낮음 | 선택 가능 | Stampede 위험 낮음 |
 | 업데이트 + 트래픽 높음 | 피하는 것이 안전 | Stampede 위험, TTL이 더 안전 |
 | 업데이트 잦음 | CacheEvict 의미 없음 | 캐시 히트율이 0에 가까워져 캐시 효과 사라짐 |
+
+---
+
+### Cache Penetration 방지 — null 값 캐싱
+
+#### 문제 정의
+
+Cache penetration은 **존재하지 않는 키로 반복 요청이 올 때 캐시를 통과해 매번 DB를 직접 치는 현상**이다.
+
+```
+요청 → 캐시 확인 → 미스 → DB 조회 → null → 캐싱 안 함
+요청 → 캐시 확인 → 미스 → DB 조회 → null → 캐싱 안 함  (반복)
+```
+
+이 프로젝트에서 발생하는 구체적인 상황:
+- **악의적 요청**: 존재하지 않는 testId를 대량으로 요청해 DB 부하를 유발
+- **삭제된 리소스**: `@CacheEvict`로 캐시가 비워진 후 같은 testId로 요청이 반복되는 경우
+
+특히 핫 키가 삭제되면 `@CacheEvict`로 캐시가 비워지는 순간 동시 요청이 DB로 몰리는 **Cache Stampede**와 함께 발생한다. 그 이후에도 같은 ID로 요청이 계속 들어오면 Cache penetration이 지속된다.
+
+#### 기존 코드의 문제
+
+```kotlin
+@Cacheable(value = ["mvpTest"], key = "#testId", ...)
+fun getMvpTest(testId: Long): MvpTestResponse {
+    val mvpTest = mvpTestRepository.findByIdOrNull(testId)
+        ?: throw ModelNotFoundException("MvpTest", testId)  // 예외를 던짐
+}
+```
+
+Spring Cache는 **예외가 던져지면 아무것도 캐싱하지 않는다.** 존재하지 않는 testId로 요청이 올 때마다 DB를 직접 조회하게 된다.
+
+#### 해결 방법 선택
+
+두 가지 방법이 있다.
+
+| 방법 | 특징 |
+|------|------|
+| **반환 타입을 nullable로 변경** | Spring Cache가 null을 자동으로 캐싱, `@Cacheable` 유지, 코드 변경 최소 |
+| RedisTemplate 직접 제어 | null/실제 데이터 TTL 분리 가능, 그러나 비즈니스 로직에 캐싱 코드가 섞임 |
+
+null TTL을 별도로 가져갈 필요가 없고, `@Cacheable` 선언적 방식을 유지하는 것이 관심사 분리 면에서 낫다고 판단해 nullable 반환 타입 방식을 선택했다.
+
+#### 구현
+
+```kotlin
+// Service: 없으면 null 반환 → Spring Cache가 NullValue로 래핑해 Redis에 저장
+@Cacheable(value = ["mvpTest"], key = "#testId", cacheManager = "redisCacheManager")
+fun getMvpTest(testId: Long): MvpTestResponse? {
+    val mvpTest = mvpTestRepository.findByIdOrNull(testId) ?: return null
+    val enterprise = enterpriseRepository.findByIdOrNull(mvpTest.enterpriseId) ?: return null
+    val categories = mvpTestCategoryMapRepository.findAllByMvpTestId(testId).map { it.category.name }
+    return MvpTestResponse.from(mvpTest, enterprise, categories)
+}
+
+// Controller: null이면 404 반환
+val response = mvpTestService.getMvpTest(testId)
+    ?: throw ModelNotFoundException("MvpTest", testId)
+```
+
+Spring Cache는 null 반환 값을 `NullValue`로 래핑해 Redis에 저장한다. 이후 같은 키로 요청이 오면 DB 조회 없이 캐시에서 null을 반환하고, Controller에서 404로 처리한다.
+
+**검증**: 존재하지 않는 testId로 반복 요청 시 첫 요청에서만 DB 쿼리 로그가 찍히고 이후 쿼리가 발생하지 않는 것을 확인했다.
+
+---
+
+### 캐시 성능 실측 결과
+
+**측정 환경**
+- 로컬 (MySQL localhost, Redis localhost)
+- 측정 도구: `HandlerInterceptor`로 서버 처리 시간 측정 (`preHandle` → `afterCompletion`)
+- 대상 API: `GET /api/v1/mvp-tests/{testId}` (DB 조회 3번: MvpTest + Enterprise + categories)
+
+**JVM 웜업 이전 (앱 최초 실행 직후 첫 요청)**
+
+첫 요청에서 ~2000ms가 찍혔으나 이는 JIT 컴파일, 커넥션 풀 초기화 등 JVM 웜업 비용이 포함된 수치다. 캐시 성능과 무관하므로 제외한다.
+
+**JVM 웜업 이후 실측값**
+
+| | 서버 처리 시간 (인터셉터) | 클라이언트 응답 시간 (Postman) |
+|---|---|---|
+| 캐시 미스 (첫 요청) | 25~30ms | 30~40ms |
+| 캐시 히트 (이후 요청) | 3~10ms | 10~20ms |
+| **개선율** | **약 75~87%** | **약 50~67%** |
+
+인터셉터와 Postman 수치의 차이(~5~10ms)는 localhost 네트워크 오버헤드로, 이 차이가 일정하다는 것이 인터셉터가 서버 처리 시간을 정확히 격리해 측정하고 있다는 근거다.
+
+**캐시 미스 시 DB 조회 구조**
+
+캐시 미스 시 서비스 레이어에서 DB 조회가 3번 발생한다:
+1. `mvpTestRepository.findByIdOrNull(testId)` — MvpTest 단건
+2. `enterpriseRepository.findByIdOrNull(enterpriseId)` — Enterprise 단건
+3. `mvpTestCategoryMapRepository.findAllByMvpTestId(testId)` — 카테고리 목록
+
+캐시 히트 시 세 쿼리 모두 생략되고 Redis 조회 1번으로 대체된다.
+
+---
+
+## 무중단 배포
+
+### 세 가지 방식 비교
+
+| | Blue-Green | Rolling | 카나리 |
+|---|---|---|---|
+| 전환 방식 | 전체 한 번에 | 인스턴스 순차 교체 | 트래픽 비율 점진적 증가 |
+| 리소스 | 2배 필요 | 추가 인프라 불필요 | 적음 |
+| 호환성 문제 | 없음 | 있음 | 있음 |
+| 롤백 | 빠르고 단순 | 복잡 | 빠름 |
+| 구현 복잡도 | 낮음 | 중간 | 높음 |
+| 핵심 목적 | 안정적 전환 | 리소스 효율 | 위험 감지·검증 |
+
+Rolling은 인스턴스를 하나씩 순차 교체하는 것이고, 카나리는 트래픽 비율을 점진적으로 올리는 것이다. 둘 다 "서서히 전환"이지만 단위가 다르다.
+
+### 이 프로젝트의 선택 — Blue-Green
+
+동일 인스턴스에서 포트(80/81)만 변경하는 방식으로 구현해 리소스 문제가 없었고, 호환성 문제 없이 안정적으로 전환하는 것이 목적이었으므로 Blue-Green을 선택했다.
+
+**배포 흐름**: GitHub Actions 트리거 → Docker 이미지 빌드 후 Docker Hub 푸시 → SSH로 EC2 접속 → 현재 포트 기준 모듈러 연산으로 대상 컨테이너 결정 → Docker Compose로 신버전 컨테이너 실행 → 헬스체크 통과 확인 → Nginx 설정 변경 → `nginx -s reload`로 트래픽 전환 → 구버전 컨테이너 종료
+
+---
+
+## 테스트
+
+### POJO 테스트 vs 통합 테스트
+
+처음에는 모든 테스트에 `@SpringBootTest`를 붙였으나, 비즈니스 로직만 검증하는 단위 테스트에는 컨텍스트가 불필요한 오버헤드임을 인지했다. MockK로 의존 객체를 모킹해 스프링 컨텍스트 없이 순수 로직만 검증하는 POJO 테스트로 전환했다.
+
+단위 테스트의 한계: 비즈니스 로직의 경우의 수는 빠르게 검증할 수 있지만, 레이어 간 연동이나 실제 DB와의 동작은 검증하지 못한다. 이상적으로는 단위 테스트 + 슬라이스 테스트(`@WebMvcTest`, `@DataJpaTest`) + 통합 테스트를 계층적으로 구성하는 테스트 피라미드가 맞다. 이 프로젝트에서는 시간 제약으로 단위 테스트에만 집중했다.
+
+---
+
+## OAuth2 — Strategy 패턴
+
+### 구현 방식
+
+`OAuthClient` 인터페이스에 `supports(provider)` 메서드를 두고, Spring이 모든 구현체를 `List<OAuthClient>`로 주입한다. 요청 시점에 `find { it.supports(provider) }`로 적합한 구현체를 선택한다.
+
+```kotlin
+private fun selectClient(provider: OAuthProvider): OAuthClient {
+    return clients.find { it.supports(provider) } ?: throw NotSupportedException()
+}
+```
+
+### 핵심 장점 — OCP
+
+새 provider(카카오 등)를 추가할 때 `OAuthClientService` 코드를 전혀 수정하지 않고 `OAuthClient` 구현체만 추가하면 된다. Spring이 자동으로 List에 포함시켜 준다.
+
+이력서에 "런타임 시점의 전략 선택 비용 절감"이라고 표현했으나, 실제 구현은 O(n) List 순회이므로 정확하지 않은 표현이었다. 핵심 장점은 성능이 아니라 확장성(OCP)이다.
+
+---
+
+## 모니터링
+
+### Redis vs MySQL 캐시 vs 브라우저 캐시
+
+| | Redis (애플리케이션 캐시) | MySQL InnoDB Buffer Pool | 브라우저 캐시 |
+|---|---|---|---|
+| 위치 | 앱과 DB 사이 | DB 내부 | 클라이언트 |
+| 캐시 단위 | 완성된 응답 DTO | 원시 데이터 페이지 | HTTP 응답 전체 |
+| 히트 시 | SQL 실행 없음 | 디스크 I/O만 생략 | 서버 요청 없음 |
+| 제어 주체 | 애플리케이션 코드 | MySQL 자동 관리 | HTTP 헤더 (개발자) |
+
+MySQL Query Cache는 쓰기 발생 시 글로벌 mutex 락으로 인한 병목 문제로 MySQL 8.0에서 완전히 제거됐다.
+
+브라우저 캐시는 `Cache-Control` 헤더로 개발자가 정책을 설정하고 브라우저가 따른다. 실무에서는 **정적 리소스(JS, CSS, 이미지) → 브라우저 캐시**, **API 응답 → Redis 같은 서버 캐시**로 역할을 분리하는 것이 일반적이다. API 응답에 브라우저 캐시를 적용하면 `@CacheEvict`로 서버 캐시를 지워도 브라우저 캐시는 제어할 수 없어 정합성 문제가 생긴다.
+
+### OOM과 스왑 메모리
+
+Blue-Green 배포 중 동일 인스턴스에서 두 컨테이너가 동시에 실행되면서 OOM이 발생했다. 스왑 메모리(디스크 공간을 메모리처럼 사용하는 가상 메모리)로 일시적으로 해결했으나 디스크 I/O가 발생하므로 근본적 해결책은 아니다.
+
+근본적 해결책: 스케일 업/아웃. 또는 신버전 컨테이너 헬스체크 통과 즉시 구버전을 내려 두 컨테이너가 겹치는 시간을 최소화하는 방법도 OOM 위험을 낮춘다.
+
+### Redis Sentinel vs Cluster
+
+| | Sentinel | Cluster |
+|---|---|---|
+| 목적 | 고가용성 (failover) | 수평 확장 + 쓰기 성능 |
+| 운영 복잡도 | 낮음 | 높음 |
+
+Sentinel은 Redis 노드와 별개의 독립 프로세스다. 마스터 장애 감지 시 Sentinel들끼리 quorum(과반수) 합의 후 슬레이브를 새 마스터로 승격한다. 홀수로 구성하는 이유가 quorum 합의 때문이다.
+
+이 프로젝트 구성: 마스터 1 + 슬레이브 2, 각 노드에 Sentinel 1개씩 총 6개. Sentinel을 Redis 노드와 같은 서버에 띄우면 서버 전체 장애 시 Sentinel도 함께 죽는 한계가 있으나, 슬레이브 2대에 남은 Sentinel 2개가 quorum을 충족하므로 failover는 정상 동작한다.

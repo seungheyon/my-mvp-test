@@ -141,6 +141,12 @@ CursorPageResponse.of()  →  hasNext 판단, nextCursor 추출, 리스트 트�
 - LAZY를 유지해 `reportMedia`가 필요 없는 다른 API(approve, delete 등)에서 불필요한 로딩을 방지한다.
 - `@Transactional(readOnly = true)`로 세션을 유지하고, `@BatchSize`로 IN 쿼리 1번에 해소한다.
 
+### @BatchSize 크기를 100으로 설정한 근거
+- IN 절에 들어가는 report ID 수는 페이지 size(최대 10건)에 비례한다.
+- 도메인 요구사항상 report당 reportMedia는 최대 10개로 제한된다.
+- 따라서 한 번의 LAZY 로딩 초기화로 접근할 report ID는 최대 10개이며, `BatchSize = 100`은 이 상한을 충분히 커버해 IN 쿼리가 항상 1번에 처리됨을 보장한다.
+- 예측이 빗나가 report당 미디어가 더 많아지더라도 N+1로 되돌아가지 않고 `ceil(실제 건수 / 100)`번으로 점진적으로 증가하는 데 그친다 (graceful degradation).
+
 ### 결과 쿼리 횟수
 | 쿼리 | 횟수 |
 |------|------|
@@ -263,3 +269,48 @@ val sortColumn: DateTimePath<LocalDateTime> = when (sortBy) {
 | @CacheEvict | 변경 시점에 즉시 무효화 | **삭제** — 존재하지 않는 리소스가 캐시에서 반환되는 것은 stale과 성격이 다름 |
 
 업데이트는 "오래된 값"이지만 삭제는 "없어야 할 값"이 남아 있는 것이다. 삭제된 MvpTest가 5분간 정상 응답으로 반환되면 클라이언트 혼란이 크므로 `deleteMvpTest`에 `@CacheEvict`를 추가한다.
+
+---
+
+## [012] Cache Penetration 방지 — null 값 캐싱
+
+**날짜**: 2026-03-19
+**관련 기능**: `GET /api/v1/mvp-tests/{testId}`
+
+### 문제
+
+존재하지 않는 `testId`로 요청 시 `ModelNotFoundException`이 던져지고, Spring Cache는 예외가 발생하면 아무것도 캐싱하지 않는다. 이후 동일한 non-existent key로 요청이 반복되면 매번 DB를 직접 조회하게 된다 (Cache Penetration).
+
+### 결정
+
+`getMvpTest`의 반환 타입을 `MvpTestResponse?`로 변경해 null을 반환하도록 하고, `ModelNotFoundException`을 Controller로 이동한다.
+
+Spring Cache는 null 반환 값을 `NullValue`로 래핑해 Redis에 저장한다. 이후 같은 키로 요청이 오면 DB 조회 없이 캐시에서 null을 반환하고, Controller에서 404로 처리한다.
+
+RedisTemplate 직접 제어 방식도 검토했으나, 비즈니스 로직에 캐싱 코드가 섞이고 `@Cacheable` 선언적 방식을 포기해야 하므로 선택하지 않았다.
+
+---
+
+## [011] Redis ObjectMapper DefaultTyping — NON_FINAL → EVERYTHING
+
+**날짜**: 2026-03-18
+**관련 파일**: `infra/redis/RedisConfig.kt`
+
+### 문제
+
+`activateDefaultTyping(LaissezFaireSubTypeValidator.instance, DefaultTyping.NON_FINAL)` 설정 후 캐시 히트 시 `SerializationException`이 발생했다.
+
+```
+Unexpected token (START_OBJECT), expected START_ARRAY:
+need Array value to contain `As.WRAPPER_ARRAY` type information for class java.lang.Object
+```
+
+원인: `NON_FINAL`은 final이 아닌 타입에만 `@class` 타입 정보를 포함시킨다. Kotlin에서는 `open`을 명시하지 않는 한 모든 클래스가 기본적으로 final이다. `MvpTestResponse`도 final이므로 `@class` 없이 `{...}`으로 저장된다. 읽을 때 `Object`(non-final) 타입으로 역직렬화를 시도하면 `@class`가 있는 `["className",{...}]` 형식을 기대하지만 저장된 값은 `{...}`이므로 불일치가 발생한다.
+
+이 문제는 `KotlinModule`이 해결하는 문제(no-arg 생성자 없는 클래스의 인스턴스화)와 다른 레이어다. `KotlinModule`은 타입을 이미 알고 있을 때 객체를 만드는 방법을 해결하고, `DefaultTyping`은 저장된 JSON에서 타입 자체를 복원하는 방법을 결정한다.
+
+### 결정
+
+`DefaultTyping.NON_FINAL` → `DefaultTyping.EVERYTHING`으로 변경한다.
+
+`EVERYTHING`은 final 클래스 포함 모든 타입에 `@class`를 포함시킨다. `EVERYTHING`은 deprecated 표시가 있으나, deprecated 이유는 신뢰할 수 없는 외부 JSON 입력을 역직렬화할 때의 보안 위험(역직렬화 공격) 때문이다. Redis 캐시는 앱 자신이 직렬화한 값만 읽으므로 이 위험에 해당하지 않는다.
