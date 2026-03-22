@@ -139,13 +139,9 @@ class MvpTestService(
     }
 
     @Cacheable(value = ["mvpTest"], key = "#testId", cacheManager = "redisCacheManager")
-    fun getMvpTest(testId: Long): MvpTestResponse {
-        val mvpTest = mvpTestRepository.findByIdOrNull(testId)
-            ?: throw ModelNotFoundException("MvpTest", testId)
-        val enterprise = enterpriseRepository.findByIdOrNull(mvpTest.enterpriseId) ?: throw ModelNotFoundException(
-            "enterprise",
-            mvpTest.enterpriseId
-        )
+    fun getMvpTest(testId: Long): MvpTestResponse? {
+        val mvpTest = mvpTestRepository.findByIdOrNull(testId) ?: return null
+        val enterprise = enterpriseRepository.findByIdOrNull(mvpTest.enterpriseId) ?: return null
         val categories = mvpTestCategoryMapRepository.findAllByMvpTestId(testId)
             .map { it.category.name }
         return MvpTestResponse.from(mvpTest, enterprise, categories)

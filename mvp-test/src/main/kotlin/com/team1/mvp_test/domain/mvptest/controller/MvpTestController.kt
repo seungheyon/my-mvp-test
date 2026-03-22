@@ -2,6 +2,7 @@ package com.team1.mvp_test.domain.mvptest.controller
 
 import com.team1.mvp_test.common.dto.CursorPageResponse
 import com.team1.mvp_test.common.dto.DateCursorPageResponse
+import com.team1.mvp_test.common.exception.ModelNotFoundException
 import com.team1.mvp_test.domain.mvptest.dto.CreateMvpTestRequest
 import com.team1.mvp_test.domain.mvptest.model.MvpTestSortType
 import com.team1.mvp_test.domain.mvptest.dto.MemberInfoResponse
@@ -66,9 +67,11 @@ class MvpTestController(
     fun getMvpTest(
         @PathVariable("testId") testId: Long,
     ): ResponseEntity<MvpTestResponse> {
+        val response = mvpTestService.getMvpTest(testId)
+            ?: throw ModelNotFoundException("MvpTest", testId)
         return ResponseEntity
             .status(HttpStatus.OK)
-            .body(mvpTestService.getMvpTest(testId))
+            .body(response)
     }
 
     @GetMapping("/sorted")
