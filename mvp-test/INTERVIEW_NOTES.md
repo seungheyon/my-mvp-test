@@ -738,6 +738,62 @@ Service는 `DateCursorPageResponse.of(items, size, dateExtractor) { it.id }` 한
 **`@Query` JPQL 대신 QueryDSL을 선택한 이유**
 `size + 1` 트릭을 쓰려면 쿼리에서 `LIMIT`을 직접 제어해야 한다. `@Query` JPQL은 `Pageable`을 통해야만 페이지 크기를 제한할 수 있는데, 이 경우 Spring의 페이지 계산 방식이 끼어들어 `size+1` 트릭을 적용할 수 없다. QueryDSL의 `.limit((size + 1).toLong())`으로 직접 제어한다.
 
+### 복합 커서와 인덱스 — 성능 전제 조건
+
+커서 기반 페이지네이션이 오프셋 방식보다 빠른 이유는 **커서 컬럼에 인덱스가 있어서 인덱스 탐색으로 처리**되기 때문이다. 인덱스가 없으면 풀스캔이 발생해 오프셋 방식과 다를 게 없어진다.
+
+`id` 단일 커서는 PK(클러스터드 인덱스)를 자동으로 타므로 별도 인덱스가 불필요하다. 반면 복합 커서(`test_start_date`, `test_end_date`)는 별도 인덱스를 구성해야 한다.
+
+#### 조회는 되는데 느린 이유
+
+인덱스 없이도 쿼리는 정상 동작한다. MySQL이 풀스캔으로 조건에 맞는 행을 찾아주기 때문이다. 데이터가 적을 때는 체감이 없지만, 수십만 건 이상이 되면 같은 쿼리가 눈에 띄게 느려진다.
+
+#### 복합 인덱스 구성
+
+```sql
+CREATE INDEX idx_mvp_test_start_date_id ON mvp_test (test_start_date DESC, id DESC);
+CREATE INDEX idx_mvp_test_end_date_id   ON mvp_test (test_end_date DESC, id DESC);
+```
+
+`sortBy` 파라미터로 `TEST_START_DATE`, `TEST_END_DATE` 둘 다 받을 수 있으므로 각각 인덱스가 필요하다. 인덱스 컬럼 순서는 쿼리의 `ORDER BY sort_column DESC, id DESC`와 일치시킨다.
+
+#### 오름차순 조회를 위한 추가 인덱스가 필요한가
+
+MySQL 옵티마이저는 `(a DESC, b DESC)` 인덱스를 역방향(`a ASC, b ASC`)으로도 탈 수 있다. 단, 컬럼별 정렬 방향이 **섞이면** 역방향 활용이 불가능해 별도 인덱스가 필요하다.
+
+| 인덱스 | 역방향(ASC, ASC) 활용 | 이유 |
+|---|---|---|
+| `(date DESC, id DESC)` | 가능 | 방향이 통일됨 |
+| `(date DESC, id ASC)` | 불가능 | 방향이 섞임 |
+
+현재 구현은 두 컬럼 모두 `DESC`라서 오름차순 조회를 추가하더라도 인덱스 2개로 커버 가능하다.
+
+#### 인덱스 개수와 쓰기 비용
+
+인덱스는 INSERT/UPDATE/DELETE 시 인덱스 자료구조도 함께 갱신해야 하므로 쓰기 비용이 증가한다.
+
+실무 기준:
+- **3~4개까지**: 크게 신경 쓰지 않음
+- **5개 이상**: "이게 다 필요한가?" 검토 대상
+- 개수보다 더 중요한 기준은 **쓰기 빈도** — 초당 수백 건 insert가 발생하는 테이블(주문, 로그)은 인덱스 하나하나가 민감하게 작용
+
+`mvp_test`는 기업이 등록·수정하는 빈도가 낮고 멤버 조회가 압도적으로 많아, 인덱스 2개 추가에 따른 쓰기 비용 부담이 크지 않다.
+
+#### 인덱스 구성 방법 — 애플리케이션 코드 vs SQL 직접
+
+**방법 A: JPA `@Table` 어노테이션**
+```kotlin
+@Table(
+    indexes = [
+        Index(name = "idx_mvp_test_start_date_id", columnList = "test_start_date DESC, id DESC"),
+        Index(name = "idx_mvp_test_end_date_id",   columnList = "test_end_date DESC, id DESC")
+    ]
+)
+```
+코드베이스만 봐도 인덱스 전략을 파악할 수 있다. `ddl-auto: update` 시 앱 재시작으로 자동 생성된다.
+
+**트레이드오프**: `ddl-auto: update`는 인덱스를 추가만 하고 삭제하지 않는다. 인덱스 이름 변경이나 삭제는 결국 SQL을 직접 써야 한다. 운영 환경에서는 `ddl-auto: none`이 일반적이라 Flyway/Liquibase 같은 마이그레이션 툴로 별도 관리가 필요하다. 즉 `@Table` 선언은 "코드 문서화" 역할에 가깝고, 운영 환경에서는 마이그레이션 스크립트가 별도로 존재해야 한다.
+
 ---
 
 ## 예외 처리
