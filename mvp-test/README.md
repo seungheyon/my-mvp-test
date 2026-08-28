@@ -1,3 +1,6 @@
+> **이 문서는 원본 팀 프로젝트([MVP-Test-FinalProject/mvp-test](https://github.com/MVP-Test-FinalProject/mvp-test))의 README다.**
+> 이 저장소는 그 코드베이스를 재료로 개인 학습을 진행한 것으로, 기여 범위는 [루트 README](../README.md)에 정리했다.
+
 
 
 ## 프로젝트 개요
